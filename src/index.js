@@ -1,9 +1,15 @@
 const MongoClient = require('mongodb').MongoClient;
-const cp = require('child_process');
 const path = require('path');
 const fs = require('fs');
-const { formatDate, formatUserRecordsCSV } = require('./utils');
+const {
+  formatDate,
+  formatUserRecordsCSV,
+  adjustNumberOfSpawnsAndRecords,
+  generateSpawn,
+  generateCSVFile,
+} = require('./utils');
 const CONFIGS = require('./configs');
+const chunk = require('lodash.chunk');
 
 const CSV_COLUMNS = [
   { columnName: 'ID', dbProperty: '_id', formatValueFunc: null },
@@ -19,7 +25,7 @@ const CSV_COLUMNS = [
 ];
 
 (async () => {
-  try {
+  try {    
     const client = await MongoClient.connect(CONFIGS.MONGO_URL, {
       useNewUrlParser: true,
       useUnifiedTopology: true,
@@ -29,68 +35,83 @@ const CSV_COLUMNS = [
       .collection(CONFIGS.COLLECTION_NAME)
       .countDocuments();
     console.log(`[DEBUG]: Total ${totalRecords} records`);
-    let minRecordsPerSpawn = 2000;
-    let maxSpawns = 10;
-    let cvsRows = [CSV_COLUMNS.map((item) => item.columnName)];
 
-    // spawns larger than maxSpawns, increase records amount per spawns
-    if (Math.ceil(totalRecords / minRecordsPerSpawn) > maxSpawns) {
-      minRecordsPerSpawn = Math.ceil(totalRecords / maxSpawns);
-    } else {
-      // spawns smaller than maxSpawns
-      // and records amount smaller than minRecordsPerSpawn
-      // decrease amount of spawns
-      if (Math.ceil(totalRecords / maxSpawns) < minRecordsPerSpawn) {
-        maxSpawns = Math.ceil(totalRecords / minRecordsPerSpawn);
-      }
+    // Create container folder which contains all sub processes folder
+    // Make sure when trash folders included in container folder
+    // Each export users request, we save all processes in a sub folder
+    const exportUsersFolder = path.resolve(
+      path.join(process.cwd(), 'export-users'),
+    );
+    if (!fs.existsSync(exportUsersFolder)) {
+      fs.mkdirSync(exportUsersFolder);
     }
+    const folderPath = path.resolve(
+      path.join(exportUsersFolder, Date.now().toString()),
+    );
+    let csvRows = [CSV_COLUMNS.map((item) => item.columnName)];
+    const {
+      maxSpawns,
+      maxSpawnsParallel,
+      minRecordsPerSpawn,
+    } = adjustNumberOfSpawnsAndRecords(totalRecords);
+    console.log(`[DEBUG]: Total ${maxSpawns} spawns`);
+    console.log(`[DEBUG]: Will be have ${maxSpawnsParallel} spawns run together in the same time`);
 
     const csvData = await new Promise((resolve, reject) => {
-      console.log('[DEBUG]: Exporting data');
-      for (let index = 0; index < maxSpawns; index++) {
-        console.log(`[DEBUG]: Start spawn ${index}`);
-        const child = cp.spawn('node', [
-          path.resolve(path.join(process.cwd(), 'collect-data.js')),
-          '--skip',
-          index * minRecordsPerSpawn,
-          '--limit',
-          minRecordsPerSpawn,
-        ]);
-        child.stdout.on('data', (data) => {
-          console.log(`[DEBUG]: Receive spawn ${index} data`);
-
-          try {
-            const formatedData = JSON.parse(data.toString());
-            cvsRows = cvsRows.concat(formatUserRecordsCSV(formatedData, CSV_COLUMNS));
-            if (cvsRows.length - 1 === totalRecords) {
-              console.log('[DEBUG]: Start generate csv content');
-              const csvContent = cvsRows.map((r) => r.join(',')).join('\n');
-              resolve(csvContent);
-            }
-          } catch (e) {
-            console.log(`[DEBUG]: Cannot parse data error: ${e}`);
-            throw new Error(`Cannot parse data`);
-          }
-        });
-        child.on('exit', (code) => {
-          if (code === 1) {
-            console.log(
-              `[DEBUG]: Exit spawn number ${index} with code ${code}`,
-            );
-            reject(code);
-          }
-        });
+      console.log('[DEBUG]: Preparing data');
+      const spawns = [];
+      // Create folder to contain spawn files, prevent multiple export requests
+      if (!fs.existsSync(folderPath)) {
+        fs.mkdirSync(folderPath);
       }
+      for (let index = 0; index < maxSpawns; index++) {
+        spawns.push(
+          () =>
+            new Promise((rs) => {
+              console.log(`[DEBUG]: Start spawn ${index}`);
+              generateSpawn(
+                { index, folderPath, minRecordsPerSpawn },
+                (error, data) => {
+                  if (error) {
+                    console.log(error);
+                    reject(`[DEBUG]: Spawn ${index} failed`);
+                  } else {
+                    console.log(`[DEBUG]: Receive spawn ${index} data`);
+                    csvRows = csvRows.concat(formatUserRecordsCSV(data, CSV_COLUMNS));
+                    if (csvRows.length - 1 === totalRecords) {
+                      console.log('[DEBUG]: Start generate csv content');
+                      const csvContent = csvRows
+                        .map((row) => row.join(','))
+                        .join('\n');
+                      resolve(csvContent);
+                    }
+                    rs();
+                  }
+                },
+              );
+            }),
+        );
+      }
+      console.log('[DEBUG]: Exporting data');
+      chunk(spawns, Math.ceil(spawns.length / maxSpawnsParallel)).forEach(
+        async (currentSpawns) => {
+          for (let index = 0; index < currentSpawns.length; index++) {
+            try {
+              await currentSpawns[index]();
+            } catch(e) {
+              console.log(e);
+            }
+          }
+        },
+      );
     });
 
-    const filePath = path.resolve(path.join(process.cwd(), 'data.csv'));
-    fs.writeFileSync(filePath, csvData);
-    console.debug('[DEBUG]: Completed generate csv file');
-    client.close();
+    generateCSVFile(csvData, folderPath);
+    console.log('[DEBUG]: Generate file successully!');
   } catch (e) {
-    console.log(`[ERROR]: Something wrong: ${e}`);
+    console.log(e);
+    console.log('[DEBUG]: Cannot export csv');
   } finally {
-    console.debug('[DEBUG]: Closed connection');
     process.exit(1);
   }
 })();

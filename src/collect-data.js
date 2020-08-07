@@ -1,6 +1,7 @@
 const MongoClient = require('mongodb').MongoClient;
 const { finalizeArgs } = require('jsuti');
 const CONFIGS = require('./configs');
+const fs = require('fs');
 
 /**
  * possible args
@@ -16,14 +17,21 @@ const possibleArgs = [
     name: 'limit',
     arg: '--limit',
     abbr: '-l',
-    default: 0,
+    default: 100,
+  },
+  {
+    name: 'filePath',
+    arg: '--file-path',
+    abbr: '-p',
+    default: '.',
   },
 ];
 
 // Start script
 (async () => {
+  let client;
   try {
-    const client = await MongoClient.connect(CONFIGS.MONGO_URL, {
+    client = await MongoClient.connect(CONFIGS.MONGO_URL, {
       useNewUrlParser: true,
       useUnifiedTopology: true,
     });
@@ -34,15 +42,16 @@ const possibleArgs = [
 
     const data = await db
       .collection(CONFIGS.COLLECTION_NAME)
-      .find()
+      .find({})
       .skip(parseInt(cliArgs.skip))
       .limit(parseInt(cliArgs.limit))
       .toArray();
 
-    process.stdout.write(JSON.stringify(data));
-
-    client.close();
+    fs.writeFileSync(cliArgs.filePath, JSON.stringify(data));
+    console.log(`Write file successfully to ${cliArgs.filePath}`);
   } catch (e) {
-    // nothing
+    console.log(e);
+  } finally {
+    client.close();
   }
 })();

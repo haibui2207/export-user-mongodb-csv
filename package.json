@@ -11,6 +11,7 @@
   "dependencies": {
     "child_process": "^1.0.2",
     "jsuti": "0.0.1-alpha.30",
+    "lodash.chunk": "^4.2.0",
     "mongodb": "^3.5.9"
   }
 }
