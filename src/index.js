@@ -67,14 +67,14 @@ const CSV_COLUMNS = [
       for (let index = 0; index < maxSpawns; index++) {
         spawns.push(
           () =>
-            new Promise((rs) => {
+            new Promise((rs, rj) => {
               console.log(`[DEBUG]: Start spawn ${index}`);
               generateSpawn(
                 { index, folderPath, minRecordsPerSpawn },
                 (error, data) => {
                   if (error) {
-                    console.log(error);
-                    reject(`[DEBUG]: Spawn ${index} failed`);
+                    rj(`[DEBUG]: Spawn ${index} failed with error: ${error}`);
+                    reject(1);
                   } else {
                     console.log(`[DEBUG]: Receive spawn ${index} data`);
                     csvRows = csvRows.concat(formatUserRecordsCSV(data, CSV_COLUMNS));
